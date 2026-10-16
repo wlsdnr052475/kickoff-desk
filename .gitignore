@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# API credentials and local environment files
+.env
+.env.*
+!.env.example
+
+# Local secrets and application data
+secrets/
+*.log
+
