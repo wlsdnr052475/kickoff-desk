@@ -188,8 +188,13 @@ def test_ui_converts_utc_and_never_exposes_scores(window_factory, qtbot, tmp_pat
     )
     load(qtbot, window)
     rows = table_values(window.day_table)
-    assert rows[0] == ["03:30", "프리미어리그", "Arsenal", "Tottenham", "경기 종료"]
+    assert rows[0] == ["03:30", "프리미어리그", "아스널", "토트넘", "경기 종료"]
     assert rows[1][0] == "시간 미확정"
+    assert rows[1][2:4] == ["바르셀로나", "레알 마드리드"]
+    assert window.day_table.item(0, 2).toolTip() == "Arsenal"
+    assert window.day_table.item(0, 3).toolTip() == "Tottenham"
+    assert matches[0].home_name == "Arsenal"
+    assert matches[0].away_name == "Tottenham"
     assert [window.day_table.horizontalHeaderItem(i).text() for i in range(5)] == [
         "시간 (KST)",
         "대회",
@@ -722,3 +727,73 @@ def test_main_window_closes_crest_provider(window_factory, crest_provider):
     window = window_factory(use_mock=True, crest_provider=crest_provider)
     assert window.close()
     assert crest_provider.close_calls == 1
+
+
+@pytest.mark.parametrize("undated", [False, True])
+def test_localized_team_names_keep_original_tooltips_and_unknown_fallback(
+    window_factory, crest_provider, undated
+):
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    kickoff = None if undated else datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+    window.matches = [
+        Match(1, "CL", 5, "FC Bayern München", 65, "Manchester City FC", kickoff, "TIMED"),
+        Match(2, "PL", 9001, "Example United FC", None, "원정 팀 미정", kickoff, "SCHEDULED"),
+    ]
+    window._render_matches()
+    table = window.undated_table if undated else window.day_table
+    assert table.item(0, 2).text() == "바이에른 뮌헨"
+    assert table.item(0, 3).text() == "맨체스터 시티"
+    assert table.item(0, 2).toolTip() == "FC Bayern München"
+    assert table.item(0, 3).toolTip() == "Manchester City FC"
+    assert table.item(1, 2).text() == "Example United FC"
+    assert table.item(1, 3).text() == "원정 팀 미정"
+    assert not table.item(0, 2).icon().isNull()
+    assert window.matches[0].home_name == "FC Bayern München"
+
+
+def test_saved_english_favorites_display_in_korean_after_restart(
+    window_factory, tmp_path, monkeypatch, crest_provider
+):
+    SettingsStore(tmp_path).save(
+        Preferences(
+            favorite_team_ids={57, 9001},
+            favorite_team_names={57: "Arsenal FC", 9001: "Example United FC"},
+        )
+    )
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    assert window.preferences.favorite_team_names[57] == "Arsenal FC"
+
+    def inspect(dialog):
+        items = {
+            dialog.team_list.item(index).data(Qt.ItemDataRole.UserRole): dialog.team_list.item(
+                index
+            )
+            for index in range(dialog.team_list.count())
+        }
+        assert items[57].text() == "아스널"
+        assert items[57].toolTip() == "Arsenal FC"
+        assert items[9001].text() == "Example United FC"
+        assert dialog.selected_teams() == {57: "아스널", 9001: "Example United FC"}
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(FavoritesDialog, "exec", inspect)
+    window._open_favorites()
+    assert window.close()
+    reopened = window_factory(use_mock=True, crest_provider=crest_provider)
+    assert reopened.preferences.favorite_team_ids == {57, 9001}
+    assert reopened.preferences.favorite_team_names == {57: "아스널", 9001: "Example United FC"}
+
+
+def test_korean_display_names_do_not_change_favorite_matching(window_factory, crest_provider):
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    kickoff = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+    window.matches = [
+        Match(1, "PL", 57, "Arsenal FC", 73, "Tottenham Hotspur FC", kickoff, "TIMED"),
+        Match(2, "PD", 81, "FC Barcelona", 86, "Real Madrid CF", kickoff, "TIMED"),
+    ]
+    window.preferences.favorite_team_ids = {57}
+    window.favorite_checkbox.setChecked(True)
+    assert window.day_table.rowCount() == 1
+    assert window.day_table.item(0, 2).text() == "아스널"
+    assert window.day_table.item(0, 3).text() == "토트넘"
+    assert window.day_table.item(0, 2).data(Qt.ItemDataRole.UserRole) == 1

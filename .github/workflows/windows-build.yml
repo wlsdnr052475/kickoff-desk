@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-build-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -36,7 +36,22 @@ jobs:
         timeout-minutes: 5
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -v -o faulthandler_timeout=60
+        shell: pwsh
+        run: |
+          $testOutput = Join-Path $env:RUNNER_TEMP "pytest-output.txt"
+          $testErrors = Join-Path $env:RUNNER_TEMP "pytest-errors.txt"
+          $testRun = Start-Process -FilePath (Get-Command python).Source `
+            -ArgumentList "-u", "-m", "pytest", "-v", "-o", "faulthandler_timeout=60" `
+            -RedirectStandardOutput $testOutput -RedirectStandardError $testErrors -PassThru
+          $null = $testRun.Handle
+          $timedOut = -not $testRun.WaitForExit(120000)
+          if ($timedOut) {
+            taskkill /PID $testRun.Id /T /F | Out-Null
+          }
+          Get-Content $testOutput
+          Get-Content $testErrors
+          if ($timedOut) { throw "Tests exceeded two minutes; see the test and thread logs above." }
+          if ($testRun.ExitCode -ne 0) { throw "Tests failed: exit code $($testRun.ExitCode)." }
       - name: Smoke check source GUI
         run: python scripts/smoke_app.py
       - name: Build a key-free Windows executable

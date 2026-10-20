@@ -36,6 +36,7 @@ from .mock import MockClient
 from .models import COMPETITIONS, SEOUL, Match, filter_matches
 from .service import LoadResult, ScheduleService
 from .settings import CredentialError, KeyManager, Preferences, SettingsError, SettingsStore
+from .teams import display_team_name
 
 _TEAM_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 _CREST_URL_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -234,8 +235,10 @@ class FavoritesDialog(QDialog):
         self.team_list.setAccessibleName("관심 팀 선택")
         self.team_list.setIconSize(QSize(24, 24))
         self.team_list.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        for team_id, name in sorted(teams.items(), key=lambda entry: entry[1].casefold()):
-            item = QListWidgetItem(name)
+        for team_id, name in sorted(
+            teams.items(), key=lambda entry: display_team_name(*entry).casefold()
+        ):
+            item = QListWidgetItem(display_team_name(team_id, name))
             item.setToolTip(name)
             item.setData(Qt.ItemDataRole.UserRole, team_id)
             if self.crest_provider is not None:
@@ -624,6 +627,7 @@ class MainWindow(QMainWindow):
                         if column == 2
                         else (match.away_id, match.away_crest)
                     )
+                    item.setText(display_team_name(team_id, value))
                     item.setData(_TEAM_ID_ROLE, team_id)
                     item.setData(_CREST_URL_ROLE, crest_url)
                     item.setTextAlignment(
