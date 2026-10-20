@@ -33,9 +33,10 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Test without an API key
+        timeout-minutes: 5
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        run: python -m pytest -v -o faulthandler_timeout=60
       - name: Smoke check source GUI
         run: python scripts/smoke_app.py
       - name: Build a key-free Windows executable

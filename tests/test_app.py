@@ -30,7 +30,7 @@ def test_smoke_success_returns_zero_without_credentials_or_network(tmp_path):
         """
         import requests
         from PySide6.QtNetwork import QNetworkAccessManager
-        from kickoff_desk import app, ui
+        from kickoff_desk import app, logos, ui
 
         def forbidden(*args, **kwargs):
             raise AssertionError('Smoke tests must not resolve credentials or access the network')
@@ -38,6 +38,7 @@ def test_smoke_success_returns_zero_without_credentials_or_network(tmp_path):
         ui.KeyManager = forbidden
         requests.sessions.Session.request = forbidden
         QNetworkAccessManager.get = forbidden
+        logos.QNetworkAccessManager = forbidden
         assert app.main(['--smoke-test']) == 0
         """,
         tmp_path,

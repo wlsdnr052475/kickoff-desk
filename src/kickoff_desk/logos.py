@@ -135,7 +135,7 @@ class CrestProvider(QObject):
     ):
         super().__init__(parent)
         self.directory = Path(directory) / "crests"
-        self._network = network_manager or QNetworkAccessManager(self)
+        self._network = network_manager
         self._icons: dict[int, QIcon] = {}
         self._cached: set[int] = set()
         self._attempted: set[tuple[int, str]] = set()
@@ -181,6 +181,8 @@ class CrestProvider(QObject):
 
     def _pump(self) -> None:
         while self._queue and len(self._active) < _MAX_DOWNLOADS and not self._closed:
+            if self._network is None:
+                self._network = QNetworkAccessManager(self)
             team_id, url = self._queue.popleft()
             request = QNetworkRequest(QUrl(url))
             request.setAttribute(
