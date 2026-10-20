@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kickoff-desk"
+version = "0.1.0"
+description = "A native desktop football fixture calendar in Korean Standard Time"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.8,<7",
+    "requests>=2.32.3,<3",
+    "tzdata>=2025.1",
+    "keyring>=25.5,<26; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<10", "pytest-qt>=4.4,<5", "ruff>=0.11,<1"]
+build = ["pyinstaller>=6.12,<7"]
+
+[project.gui-scripts]
+kickoff-desk = "kickoff_desk.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+qt_api = "pyside6"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

@@ -229,3 +229,6 @@ __marimo__/
 secrets/
 *.log
 
+# Versioned, key-free PyInstaller build definition
+!kickoff-desk.spec
+
