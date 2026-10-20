@@ -45,3 +45,8 @@ def test_overlapping_demo_ranges_retain_match_identifiers_and_states():
 def test_demo_rejects_reversed_range():
     with pytest.raises(ValueError):
         MockClient().fetch_matches(date(2030, 4, 2), date(2030, 4, 1))
+
+
+def test_demo_does_not_supply_remote_crest_urls():
+    matches = MockClient().fetch_matches(date(2030, 4, 1), date(2030, 4, 1))
+    assert all(match.home_crest is None and match.away_crest is None for match in matches)

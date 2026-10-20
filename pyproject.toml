@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kickoff-desk"
-version = "0.1.0"
+version = "0.1.1"
 description = "A native desktop football fixture calendar in Korean Standard Time"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,8 +22,22 @@ build = ["pyinstaller>=6.12,<7"]
 [project.gui-scripts]
 kickoff-desk = "kickoff_desk.app:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kickoff_desk = [
+    "assets/crests/5.png",
+    "assets/crests/57.png",
+    "assets/crests/65.png",
+    "assets/crests/73.png",
+    "assets/crests/81.png",
+    "assets/crests/86.png",
+    "assets/crests/SOURCES.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

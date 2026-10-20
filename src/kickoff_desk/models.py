@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 SEOUL = ZoneInfo("Asia/Seoul")
@@ -23,6 +25,26 @@ STATUS_LABELS = {
     "UNKNOWN": "상태 미확인",
 }
 _CONFIRMED_STATUSES = {"TIMED", "LIVE", "IN_PLAY", "PAUSED", "FINISHED", "AWARDED"}
+_CREST_HOST = "crests.football-data.org"
+
+
+def normalize_crest_url(value: Any) -> str | None:
+    """Allow only public, credential-free team images on the API's crest host."""
+    if not isinstance(value, str) or any(ord(char) < 33 or ord(char) > 126 for char in value):
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if (
+        parts.scheme != "https"
+        or parts.netloc.lower() not in {_CREST_HOST, f"{_CREST_HOST}:443"}
+        or "?" in value
+        or "#" in value
+        or re.fullmatch(r"/[1-9][0-9]*\.(?:png|svg)", parts.path) is None
+    ):
+        return None
+    return f"https://{_CREST_HOST}{parts.path}"
 
 
 def _identifier(value: Any, *, optional: bool = False) -> int | None:
@@ -50,14 +72,18 @@ def _utc_datetime(value: Any) -> datetime | None:
         raise ValueError("경기 일시가 표시 가능한 범위를 벗어났습니다.") from None
 
 
-def _team(value: Any, fallback: str) -> tuple[int | None, str]:
+def _team(value: Any, fallback: str) -> tuple[int | None, str, str | None]:
     if value is None:
-        return None, fallback
+        return None, fallback, None
     if not isinstance(value, dict):
         raise ValueError("팀 정보가 올바르지 않습니다.")
     identifier = _identifier(value.get("id"), optional=True)
     name = value.get("name")
-    return identifier, name.strip() if isinstance(name, str) and name.strip() else fallback
+    return (
+        identifier,
+        name.strip() if isinstance(name, str) and name.strip() else fallback,
+        normalize_crest_url(value.get("crest")),
+    )
 
 
 @dataclass(frozen=True)
@@ -70,6 +96,8 @@ class Match:
     away_name: str
     utc_date: datetime | None
     status: str
+    home_crest: str | None = None
+    away_crest: str | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.id)
@@ -93,6 +121,8 @@ class Match:
             object.__setattr__(self, "utc_date", normalized)
         if not isinstance(self.status, str) or self.status not in STATUS_LABELS:
             object.__setattr__(self, "status", "UNKNOWN")
+        object.__setattr__(self, "home_crest", normalize_crest_url(self.home_crest))
+        object.__setattr__(self, "away_crest", normalize_crest_url(self.away_crest))
 
     @property
     def local_date(self) -> date | None:
@@ -121,8 +151,10 @@ class Match:
             "competition": self.competition,
             "home_id": self.home_id,
             "home_name": self.home_name,
+            "home_crest": self.home_crest,
             "away_id": self.away_id,
             "away_name": self.away_name,
+            "away_crest": self.away_crest,
             "utc_date": self.utc_date.isoformat().replace("+00:00", "Z") if self.utc_date else None,
             "status": self.status,
         }
@@ -135,8 +167,16 @@ class Match:
             {
                 "id": value.get("id"),
                 "competition": {"code": value.get("competition")},
-                "homeTeam": {"id": value.get("home_id"), "name": value.get("home_name")},
-                "awayTeam": {"id": value.get("away_id"), "name": value.get("away_name")},
+                "homeTeam": {
+                    "id": value.get("home_id"),
+                    "name": value.get("home_name"),
+                    "crest": value.get("home_crest"),
+                },
+                "awayTeam": {
+                    "id": value.get("away_id"),
+                    "name": value.get("away_name"),
+                    "crest": value.get("away_crest"),
+                },
                 "utcDate": value.get("utc_date"),
                 "status": value.get("status"),
             }
@@ -151,8 +191,8 @@ def parse_match(raw: dict[str, Any]) -> Match:
     competition = raw["competition"].get("code")
     if not isinstance(competition, str) or competition not in COMPETITIONS:
         raise ValueError("지원하지 않는 대회입니다.")
-    home_id, home_name = _team(raw.get("homeTeam"), "홈 팀 미정")
-    away_id, away_name = _team(raw.get("awayTeam"), "원정 팀 미정")
+    home_id, home_name, home_crest = _team(raw.get("homeTeam"), "홈 팀 미정")
+    away_id, away_name, away_crest = _team(raw.get("awayTeam"), "원정 팀 미정")
     status = raw.get("status")
     if not isinstance(status, str) or status not in STATUS_LABELS:
         status = "UNKNOWN"
@@ -165,6 +205,8 @@ def parse_match(raw: dict[str, Any]) -> Match:
         away_name=away_name,
         utc_date=_utc_datetime(raw.get("utcDate")),
         status=status,
+        home_crest=home_crest,
+        away_crest=away_crest,
     )
 
 

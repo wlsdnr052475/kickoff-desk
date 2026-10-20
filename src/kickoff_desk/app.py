@@ -43,7 +43,23 @@ def main(argv: list[str] | None = None) -> int:
             nonlocal smoke_exit_code
             # A visible window and actual data must both be present; startup alone is insufficient.
             if not smoke_timed_out:
-                passed = result.source == "mock" and bool(result.matches) and window.isVisible()
+                provider = window.crest_provider
+                fallback = provider.icon(None).cacheKey()
+                team_ids = {
+                    team_id
+                    for match in result.matches
+                    for team_id in (match.home_id, match.away_id)
+                    if team_id is not None
+                }
+                crests_present = all(
+                    provider.icon(team_id).cacheKey() != fallback for team_id in team_ids
+                )
+                passed = (
+                    result.source == "mock"
+                    and bool(result.matches)
+                    and window.isVisible()
+                    and crests_present
+                )
                 smoke_exit_code = 0 if passed else 1
             smoke_timer.stop()
             window.close()

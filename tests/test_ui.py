@@ -6,7 +6,8 @@ import threading
 from datetime import datetime, timezone
 
 import pytest
-from PySide6.QtCore import QDate, Qt, QTimer
+from PySide6.QtCore import QDate, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import QDialog, QLineEdit
 
 from kickoff_desk import settings, ui
@@ -21,6 +22,36 @@ from kickoff_desk.ui import FavoritesDialog, KeyDialog, MainWindow
 @pytest.fixture(autouse=True)
 def no_native_credentials(monkeypatch):
     monkeypatch.setattr(settings, "_native_backend", lambda: None)
+
+
+@pytest.fixture
+def crest_provider(qapp):
+    class FakeCrestProvider(QObject):
+        updated = Signal(int)
+
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+            self.icons = {}
+            self.close_calls = 0
+            placeholder = QPixmap(24, 24)
+            placeholder.fill(QColor("#718096"))
+            self.placeholder = QIcon(placeholder)
+
+        def icon(self, team_id, crest_url=None, *, allow_network=False):
+            self.calls.append((team_id, crest_url, allow_network))
+            return self.icons.get(team_id, self.placeholder)
+
+        def update_icon(self, team_id):
+            image = QPixmap(24, 24)
+            image.fill(QColor("#cc3344"))
+            self.icons[team_id] = QIcon(image)
+            self.updated.emit(team_id)
+
+        def close(self):
+            self.close_calls += 1
+
+    return FakeCrestProvider()
 
 
 @pytest.fixture
@@ -245,7 +276,7 @@ def test_loading_runs_in_background_and_only_once(window_factory, qtbot):
     assert window.calendar.isEnabled()
 
 
-def test_close_waits_for_worker_and_signal_observes_cleanup(window_factory, qtbot):
+def test_close_waits_for_worker_and_signal_observes_cleanup(window_factory, qtbot, crest_provider):
     entered = threading.Event()
     release = threading.Event()
 
@@ -255,7 +286,7 @@ def test_close_waits_for_worker_and_signal_observes_cleanup(window_factory, qtbo
             release.wait(timeout=3)
             return LoadResult(year, month, [], None, "mock")
 
-    window = window_factory(service_factory=lambda _: SlowService())
+    window = window_factory(service_factory=lambda _: SlowService(), crest_provider=crest_provider)
     loading_on_completion = []
     window.load_completed.connect(lambda _: loading_on_completion.append(window.is_loading))
     window.load_month()
@@ -263,12 +294,14 @@ def test_close_waits_for_worker_and_signal_observes_cleanup(window_factory, qtbo
         qtbot.waitUntil(entered.is_set)
         assert window.close() is False
         assert window.isVisible()
+        assert crest_provider.close_calls == 0
         assert "요청을 마친 뒤 종료" in window.notice_label.text()
     finally:
         release.set()
     qtbot.waitUntil(lambda: not window.is_loading)
     assert not window.isVisible()
     assert loading_on_completion == [False]
+    assert crest_provider.close_calls == 1
 
 
 def test_unexpected_worker_error_is_safe(window_factory, qtbot):
@@ -284,7 +317,9 @@ def test_unexpected_worker_error_is_safe(window_factory, qtbot):
     assert window.refresh_button.isEnabled()
 
 
-def test_api_client_is_reused_across_mode_and_key_changes(window_factory, qtbot, monkeypatch):
+def test_api_client_is_reused_across_mode_and_key_changes(
+    window_factory, qtbot, monkeypatch, crest_provider
+):
     class FakeClient(MockClient):
         def __init__(self, key):
             self.key = key
@@ -293,7 +328,7 @@ def test_api_client_is_reused_across_mode_and_key_changes(window_factory, qtbot,
             self.key = key
 
     monkeypatch.setattr(ui, "ApiClient", FakeClient)
-    window = window_factory(use_mock=False)
+    window = window_factory(use_mock=False, crest_provider=crest_provider)
     manager = KeyManager(window.settings_store)
     manager.set_key("first-test-key")
     window.key_manager = manager
@@ -521,3 +556,169 @@ def test_failed_mode_save_warning_survives_load(window_factory, qtbot, monkeypat
     with qtbot.waitSignal(window.load_completed, timeout=5000):
         window.mock_checkbox.setChecked(True)
     assert "설정을 저장하지 못했습니다" not in window.notice_label.text()
+
+
+def test_mock_fixture_tables_show_team_icons_and_preserve_full_names(window_factory, qtbot):
+    window = window_factory(use_mock=True)
+    load(qtbot, window)
+    matches_by_id = {match.id: match for match in window.matches}
+    for table in (window.day_table, window.undated_table):
+        assert table.iconSize() == QSize(24, 24)
+        assert table.layoutDirection() == Qt.LayoutDirection.LeftToRight
+        for row in range(table.rowCount()):
+            match = matches_by_id[table.item(row, 0).data(Qt.ItemDataRole.UserRole)]
+            for column, name in ((2, match.home_name), (3, match.away_name)):
+                item = table.item(row, column)
+                assert not item.icon().isNull()
+                assert item.text() == name
+                assert item.toolTip() == name
+                assert item.data(Qt.ItemDataRole.UserRole) == match.id
+                assert item.textAlignment() & Qt.AlignmentFlag.AlignLeft
+
+
+def test_mock_requests_icons_only_for_displayed_teams_without_network(
+    window_factory, qtbot, crest_provider
+):
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    load(qtbot, window)
+    assert crest_provider.calls
+    assert all(not network for _, _, network in crest_provider.calls)
+    window.competition_checkboxes["PD"].setChecked(False)
+    window.competition_checkboxes["CL"].setChecked(False)
+    crest_provider.calls.clear()
+    window._render_matches()
+    assert [team_id for team_id, _, _ in crest_provider.calls] == [57, 73]
+    assert all(not network for _, _, network in crest_provider.calls)
+
+
+@pytest.mark.parametrize("use_mock", [True, False])
+def test_team_crest_urls_only_allow_network_in_live_mode(window_factory, crest_provider, use_mock):
+    window = window_factory(use_mock=use_mock, crest_provider=crest_provider)
+    window.matches = [
+        Match(
+            1,
+            "PL",
+            57,
+            "아스널",
+            73,
+            "토트넘",
+            None,
+            "SCHEDULED",
+            home_crest="https://crests.football-data.org/57.png",
+            away_crest="https://crests.football-data.org/73.png",
+        )
+    ]
+    window._render_matches()
+    assert crest_provider.calls == [
+        (57, "https://crests.football-data.org/57.png", not use_mock),
+        (73, "https://crests.football-data.org/73.png", not use_mock),
+    ]
+
+
+def test_async_crests_update_both_tables_without_resetting_view(window_factory, crest_provider):
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    window.matches = [
+        Match(
+            1,
+            "PL",
+            57,
+            "아스널",
+            73,
+            "토트넘",
+            datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+            "TIMED",
+        ),
+        Match(2, "CL", 57, "아스널", None, "원정 팀 미정", None, "SCHEDULED"),
+    ]
+    window.preferences.favorite_team_ids = {57}
+    window.favorite_checkbox.setChecked(True)
+    window.competition_checkboxes["PD"].setChecked(False)
+    window.day_table.selectRow(0)
+    day_home = window.day_table.item(0, 2)
+    undated_home = window.undated_table.item(0, 2)
+    away_icon = window.day_table.item(0, 3).icon().cacheKey()
+    previous = day_home.icon().cacheKey()
+    crest_provider.calls.clear()
+    crest_provider.update_icon(57)
+    assert window.day_table.item(0, 2) is day_home
+    assert window.undated_table.item(0, 2) is undated_home
+    assert day_home.icon().cacheKey() != previous
+    assert undated_home.icon().cacheKey() == day_home.icon().cacheKey()
+    assert window.day_table.item(0, 3).icon().cacheKey() == away_icon
+    assert window.day_table.selectionModel().selectedRows()[0].row() == 0
+    assert window.favorite_checkbox.isChecked()
+    assert not window.competition_checkboxes["PD"].isChecked()
+    assert window.calendar.selectedDate() == QDate(2026, 1, 15)
+    assert crest_provider.calls == [(57, None, False), (57, None, False)]
+
+
+def test_favorites_icons_refresh_without_changing_checks(qtbot, crest_provider):
+    dialog = FavoritesDialog(
+        {57: "아스널", 999: "저장된 팀"},
+        {57},
+        crest_provider=crest_provider,
+        crest_urls={57: "https://crests.football-data.org/57.png"},
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.team_list.iconSize() == QSize(24, 24)
+    assert dialog.team_list.layoutDirection() == Qt.LayoutDirection.LeftToRight
+    items = {
+        dialog.team_list.item(index).data(Qt.ItemDataRole.UserRole): dialog.team_list.item(index)
+        for index in range(dialog.team_list.count())
+    }
+    assert not items[57].icon().isNull()
+    assert not items[999].icon().isNull()
+    assert items[57].text() == "아스널"
+    assert items[57].toolTip() == "아스널"
+    before = items[57].icon().cacheKey()
+    other = items[999].icon().cacheKey()
+    dialog.team_list.setCurrentItem(items[57])
+    crest_provider.update_icon(57)
+    assert items[57].icon().cacheKey() != before
+    assert items[999].icon().cacheKey() == other
+    assert dialog.selected_teams() == {57: "아스널"}
+    assert dialog.team_list.currentItem() is items[57]
+    assert all(not network for _, _, network in crest_provider.calls)
+
+
+def test_favorites_pass_loaded_crest_urls_and_restore_absent_team_icons(
+    window_factory, monkeypatch, crest_provider
+):
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    window.preferences = Preferences(
+        favorite_team_ids={999}, favorite_team_names={999: "저장된 팀"}
+    )
+    window.matches = [
+        Match(
+            1,
+            "PL",
+            57,
+            "아스널",
+            73,
+            "토트넘",
+            None,
+            "SCHEDULED",
+            home_crest="https://crests.football-data.org/57.png",
+            away_crest="https://crests.football-data.org/73.png",
+        )
+    ]
+
+    def inspect(dialog):
+        assert dialog.crest_provider is crest_provider
+        assert dialog.crest_urls == {
+            57: "https://crests.football-data.org/57.png",
+            73: "https://crests.football-data.org/73.png",
+        }
+        assert dialog.selected_teams() == {999: "저장된 팀"}
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(FavoritesDialog, "exec", inspect)
+    window._open_favorites()
+    assert (999, None, False) in crest_provider.calls
+    assert all(not network for _, _, network in crest_provider.calls)
+
+
+def test_main_window_closes_crest_provider(window_factory, crest_provider):
+    window = window_factory(use_mock=True, crest_provider=crest_provider)
+    assert window.close()
+    assert crest_provider.close_calls == 1

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
-from PySide6.QtCore import QDate, QLocale, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QDate, QLocale, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QTextCharFormat
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -31,10 +31,14 @@ from PySide6.QtWidgets import (
 
 from .api import ApiClient, ApiError
 from .cache import CacheStore
+from .logos import CrestProvider
 from .mock import MockClient
 from .models import COMPETITIONS, SEOUL, Match, filter_matches
 from .service import LoadResult, ScheduleService
 from .settings import CredentialError, KeyManager, Preferences, SettingsError, SettingsStore
+
+_TEAM_ID_ROLE = Qt.ItemDataRole.UserRole + 1
+_CREST_URL_ROLE = Qt.ItemDataRole.UserRole + 2
 
 _STYLE = """
 QMainWindow, QDialog { background: #f2f5f8; color: #162b41; }
@@ -213,8 +217,13 @@ class FavoritesDialog(QDialog):
         teams: dict[int, str],
         selected_ids: set[int],
         parent: QWidget | None = None,
+        crest_provider: CrestProvider | None = None,
+        crest_urls: dict[int, str] | None = None,
+        allow_network: bool = False,
     ):
         super().__init__(parent)
+        self.crest_provider = crest_provider
+        self.crest_urls = crest_urls or {}
         self.setWindowTitle("관심 팀 관리 — Kickoff Desk")
         self.resize(400, 440)
         layout = QVBoxLayout(self)
@@ -223,14 +232,25 @@ class FavoritesDialog(QDialog):
         layout.addWidget(description)
         self.team_list = QListWidget()
         self.team_list.setAccessibleName("관심 팀 선택")
+        self.team_list.setIconSize(QSize(24, 24))
+        self.team_list.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         for team_id, name in sorted(teams.items(), key=lambda entry: entry[1].casefold()):
             item = QListWidgetItem(name)
+            item.setToolTip(name)
             item.setData(Qt.ItemDataRole.UserRole, team_id)
+            if self.crest_provider is not None:
+                item.setIcon(
+                    self.crest_provider.icon(
+                        team_id, self.crest_urls.get(team_id), allow_network=allow_network
+                    )
+                )
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(
                 Qt.CheckState.Checked if team_id in selected_ids else Qt.CheckState.Unchecked
             )
             self.team_list.addItem(item)
+        if self.crest_provider is not None:
+            self.crest_provider.updated.connect(self._refresh_team_icon)
         layout.addWidget(self.team_list)
         if not teams:
             layout.addWidget(QLabel("일정을 불러온 뒤 관심 팀을 선택할 수 있습니다."))
@@ -242,6 +262,18 @@ class FavoritesDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _refresh_team_icon(self, team_id: int) -> None:
+        if self.crest_provider is None:
+            return
+        for index in range(self.team_list.count()):
+            item = self.team_list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) == team_id:
+                item.setIcon(
+                    self.crest_provider.icon(
+                        team_id, self.crest_urls.get(team_id), allow_network=False
+                    )
+                )
 
     def selected_teams(self) -> dict[int, str]:
         return {
@@ -261,11 +293,17 @@ class MainWindow(QMainWindow):
         use_mock: bool | None = None,
         auto_load: bool = True,
         service_factory: Callable[[bool], ScheduleService] | None = None,
+        crest_provider: CrestProvider | None = None,
     ):
         super().__init__()
         self.settings_store = settings_store
         self.key_manager = key_manager
         self.service_factory = service_factory
+        self.crest_provider = (
+            crest_provider
+            if crest_provider is not None
+            else CrestProvider(settings_store.directory, self)
+        )
         self._api_client: ApiClient | None = None
         self._mock_client = MockClient()
         self._worker: MonthWorker | None = None
@@ -287,6 +325,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(920, 650)
         self.setStyleSheet(_STYLE)
         self._build_ui()
+        self.crest_provider.updated.connect(self._refresh_team_icons)
         self._render_matches()
         self._update_mode_label()
         if preference_warning:
@@ -423,6 +462,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _new_table() -> QTableWidget:
         table = QTableWidget(0, 5)
+        table.setIconSize(QSize(24, 24))
+        table.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         table.setHorizontalHeaderLabels(["시간 (KST)", "대회", "홈", "원정", "상태"])
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -561,8 +602,7 @@ class MainWindow(QMainWindow):
         for marked in self._marked_dates:
             self.calendar.setDateTextFormat(marked, marker)
 
-    @staticmethod
-    def _fill_table(table: QTableWidget, matches: list[Match]) -> None:
+    def _fill_table(self, table: QTableWidget, matches: list[Match]) -> None:
         table.setRowCount(len(matches))
         for row, match in enumerate(matches):
             values = (
@@ -578,7 +618,35 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, match.id)
                 if column in (0, 1, 4):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                else:
+                    team_id, crest_url = (
+                        (match.home_id, match.home_crest)
+                        if column == 2
+                        else (match.away_id, match.away_crest)
+                    )
+                    item.setData(_TEAM_ID_ROLE, team_id)
+                    item.setData(_CREST_URL_ROLE, crest_url)
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    item.setIcon(
+                        self.crest_provider.icon(
+                            team_id, crest_url, allow_network=not self.use_mock
+                        )
+                    )
                 table.setItem(row, column, item)
+
+    def _refresh_team_icons(self, team_id: int) -> None:
+        for table in (self.day_table, self.undated_table):
+            for row in range(table.rowCount()):
+                for column in (2, 3):
+                    item = table.item(row, column)
+                    if item is not None and item.data(_TEAM_ID_ROLE) == team_id:
+                        item.setIcon(
+                            self.crest_provider.icon(
+                                team_id, item.data(_CREST_URL_ROLE), allow_network=False
+                            )
+                        )
 
     def _page_changed(self, year: int, month: int) -> None:
         selected = self.calendar.selectedDate()
@@ -631,14 +699,24 @@ class MainWindow(QMainWindow):
             team_id: self.preferences.favorite_team_names.get(team_id, f"팀 #{team_id}")
             for team_id in self.preferences.favorite_team_ids
         }
+        crest_urls: dict[int, str] = {}
         for match in self.matches:
-            for team_id, name in (
-                (match.home_id, match.home_name),
-                (match.away_id, match.away_name),
+            for team_id, name, crest_url in (
+                (match.home_id, match.home_name, match.home_crest),
+                (match.away_id, match.away_name, match.away_crest),
             ):
                 if team_id is not None:
                     teams[team_id] = name
-        dialog = FavoritesDialog(teams, self.preferences.favorite_team_ids, self)
+                    if crest_url:
+                        crest_urls[team_id] = crest_url
+        dialog = FavoritesDialog(
+            teams,
+            self.preferences.favorite_team_ids,
+            self,
+            crest_provider=self.crest_provider,
+            crest_urls=crest_urls,
+            allow_network=not self.use_mock,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             chosen = dialog.selected_teams()
             try:
@@ -660,4 +738,5 @@ class MainWindow(QMainWindow):
             self._show_notice("현재 요청을 마친 뒤 종료합니다. 잠시 기다려 주세요.")
             event.ignore()
             return
+        self.crest_provider.close()
         super().closeEvent(event)

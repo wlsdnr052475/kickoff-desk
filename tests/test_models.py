@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from kickoff_desk.models import Match, filter_matches, parse_match
+from kickoff_desk.models import Match, filter_matches, normalize_crest_url, parse_match
 
 
 def fixture(**changes):
@@ -32,8 +32,10 @@ def test_korean_midnight_rollover_and_score_free_round_trip():
         "competition",
         "home_id",
         "home_name",
+        "home_crest",
         "away_id",
         "away_name",
+        "away_crest",
         "utc_date",
         "status",
     }
@@ -145,3 +147,118 @@ def test_direct_match_rejects_date_that_cannot_be_displayed_in_seoul():
             datetime(9999, 12, 31, 20, tzinfo=timezone.utc),
             "TIMED",
         )
+
+
+def test_api_team_crests_survive_score_free_cache_roundtrip():
+    match = parse_match(
+        fixture(
+            homeTeam={
+                "id": 57,
+                "name": "Arsenal",
+                "crest": "https://crests.football-data.org/57.png",
+            },
+            awayTeam={
+                "id": 73,
+                "name": "Tottenham",
+                "crest": "https://crests.football-data.org/73.svg",
+            },
+        )
+    )
+    assert match.home_crest == "https://crests.football-data.org/57.png"
+    assert match.away_crest == "https://crests.football-data.org/73.svg"
+    assert Match.from_dict(match.to_dict()) == match
+    assert "score" not in match.to_dict()
+
+
+def test_missing_crest_fields_in_existing_cache_remain_compatible():
+    stored = parse_match(fixture()).to_dict()
+    del stored["home_crest"]
+    del stored["away_crest"]
+    restored = Match.from_dict(stored)
+    assert restored.home_crest is None
+    assert restored.away_crest is None
+    assert restored.id == stored["id"]
+    assert restored.kickoff_label == "00:00"
+
+
+def test_existing_eight_positional_match_arguments_remain_compatible():
+    match = Match(1, "PL", 57, "Arsenal", 73, "Tottenham", None, "SCHEDULED")
+    assert match.home_crest is None
+    assert match.away_crest is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        57,
+        {},
+        "http://crests.football-data.org/57.png",
+        "https://example.org/57.png",
+        "https://crests.football-data.org.example.org/57.png",
+        "https://secret@crests.football-data.org/57.png",
+        "https://user:secret@crests.football-data.org/57.png",
+        "https://crests.football-data.org:8443/57.png",
+        "https://crests.football-data.org:/57.png",
+        "https://crests.football-data.org/57.png?token=secret",
+        "https://crests.football-data.org/57.png?",
+        "https://crests.football-data.org/57.png#secret",
+        "https://crests.football-data.org/57.png#",
+        "https://crests.football-data.org/PL.png",
+        "https://crests.football-data.org/57.jpg",
+        "https://crests.football-data.org/57.PNG",
+        "https://crests.football-data.org/0.png",
+        "https://crests.football-data.org/../57.png",
+        "https://crests.football-data.org/%35%37.png",
+        "https://crests.football-data.org//57.png",
+        "https://crests.football-data.org/５７.png",
+        "https://crests.football-data.org\\@example.org/57.png",
+        " https://crests.football-data.org/57.png",
+        "https://crests.football-data.org/57.png\n",
+        "https://crests.foot\tball-data.org/57.png",
+        "https://[invalid/57.png",
+        "file:///57.png",
+        "data:image/png;base64,secret",
+    ],
+)
+def test_unsupported_crest_urls_are_ignored_without_losing_the_match(url):
+    assert normalize_crest_url(url) is None
+    match = parse_match(fixture(homeTeam={"id": 57, "name": "Arsenal", "crest": url}))
+    assert match.id == 42
+    assert match.home_name == "Arsenal"
+    assert match.home_crest is None
+    assert match.to_dict()["home_crest"] is None
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://crests.football-data.org/57.png", "https://crests.football-data.org/57.png"),
+        ("https://crests.football-data.org/73.svg", "https://crests.football-data.org/73.svg"),
+        ("https://crests.football-data.org:443/81.svg", "https://crests.football-data.org/81.svg"),
+        ("HTTPS://CRESTS.FOOTBALL-DATA.ORG/86.png", "https://crests.football-data.org/86.png"),
+    ],
+)
+def test_official_numeric_png_and_svg_urls_are_normalized(url, expected):
+    assert normalize_crest_url(url) == expected
+
+
+def test_direct_match_and_existing_cache_discard_unsafe_crest_values():
+    match = Match(
+        1,
+        "PL",
+        57,
+        "Arsenal",
+        73,
+        "Tottenham",
+        None,
+        "SCHEDULED",
+        home_crest="https://crests.football-data.org/57.png?token=secret",
+        away_crest="https://example.org/73.svg",
+    )
+    assert match.home_crest is None
+    assert match.away_crest is None
+    stored = match.to_dict()
+    stored["home_crest"] = "https://user:secret@crests.football-data.org/57.png"
+    assert Match.from_dict(stored).home_crest is None

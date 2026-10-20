@@ -29,6 +29,7 @@ def test_smoke_success_returns_zero_without_credentials_or_network(tmp_path):
     run_app_script(
         """
         import requests
+        from PySide6.QtNetwork import QNetworkAccessManager
         from kickoff_desk import app, ui
 
         def forbidden(*args, **kwargs):
@@ -36,7 +37,21 @@ def test_smoke_success_returns_zero_without_credentials_or_network(tmp_path):
 
         ui.KeyManager = forbidden
         requests.sessions.Session.request = forbidden
+        QNetworkAccessManager.get = forbidden
         assert app.main(['--smoke-test']) == 0
+        """,
+        tmp_path,
+    )
+
+
+def test_smoke_fails_when_packaged_crests_are_missing(tmp_path):
+    run_app_script(
+        """
+        from pathlib import Path
+        from kickoff_desk import app, logos
+
+        logos._BUNDLED = Path('missing-crest-package')
+        assert app.main(['--smoke-test']) == 1
         """,
         tmp_path,
     )

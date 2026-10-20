@@ -6,6 +6,7 @@ EPL(PL), 라리가(PD), UEFA 챔피언스리그(CL) 일정을 한국시간으로
 
 - 달력에서 날짜를 선택해 세 대회의 통합 경기 목록 확인
 - `Asia/Seoul` 기준 날짜·시간, 대회 필터, 관심 팀 필터
+- 경기 목록과 관심 팀 목록에서 팀 이름 왼쪽에 로고 표시
 - 경기 상태와 미확정 시간 표시, 날짜가 없는 경기는 별도 목록 표시
 - 새로고침, 마지막 성공 갱신 시간, 캐시·오프라인 상태 표시
 - 월별 로컬 캐시와 인터넷·인증·요청 제한·응답 오류 처리
@@ -68,6 +69,14 @@ py -3.12 -m venv .venv
 
 Windows 설정 파일은 `%LOCALAPPDATA%\KickoffDesk\settings.json`입니다. 같은 Windows 사용자 계정에서는 실행 파일을 다른 폴더로 옮기거나 교체해도 이 설정을 사용합니다. 다른 PC로 관심 팀을 옮길 때는 두 프로그램을 종료하고 이 설정 파일을 대상 PC의 같은 앱 데이터 위치에 복사할 수 있습니다. API 키는 이 파일에 없으므로 다른 PC에서는 별도로 등록해야 합니다.
 
+### 팀 로고
+
+경기 목록의 홈·원정 팀과 관심 팀 관리 목록에서 팀 이름 왼쪽에 로고를 표시합니다. 다운로드 중이거나 실패해도 팀 이름은 유지하며, 사용할 수 있는 내장·캐시 로고가 없을 때는 중립 아이콘을 표시합니다.
+
+Mock 모드에는 아스널, 맨체스터 시티, 토트넘, 바르셀로나, 레알 마드리드, 바이에른 뮌헨 6개 팀의 PNG 로고가 내장되어 인터넷 없이 표시됩니다. 내장된 팀 수는 실제 일정에서 지원하는 팀의 제한이 아닙니다. 실제 API 모드에서는 경기 응답의 팀별 `crest` URL로 이미지를 비동기 다운로드하고, 성공한 이미지를 앱 데이터 폴더의 `crests/{팀 ID}.png`에 저장합니다. 이미지 요청에는 API 키나 `X-Auth-Token`을 포함하지 않습니다.
+
+한 번 저장한 로고와 내장 로고는 오프라인에서도 사용할 수 있습니다. 저장되지 않은 팀의 로고를 새로 받으려면 인터넷 연결이 필요합니다. Windows 로고 캐시는 `%LOCALAPPDATA%\KickoffDesk\crests`에 있으므로 실행 파일을 교체해도 유지됩니다. 내장 이미지의 원본 출처와 권리 안내는 [로고 출처 문서](src/kickoff_desk/assets/crests/SOURCES.md)를 확인하세요.
+
 ### 캐시와 오프라인 조회
 
 Windows에서는 `%LOCALAPPDATA%\KickoffDesk`에 설정과 월별 캐시를 저장합니다. 개발용 Linux에서는 `$XDG_DATA_HOME/kickoff-desk` 또는 `~/.local/share/kickoff-desk`를 사용합니다. Mock 캐시와 실제 API 캐시는 분리합니다.
@@ -93,6 +102,8 @@ src/kickoff_desk/
   cache.py               점수·키가 없는 월별 캐시
   service.py             월별 조회와 오프라인 대체 처리
   settings.py            설정과 안전한 키 관리
+  logos.py               팀 로고 다운로드와 로컬 이미지 캐시
+  assets/crests/         Mock 팀 로고 6개와 원본 출처 문서
   ui.py                  PySide6 화면과 백그라운드 작업
 tests/                   API Mock, 모델, 캐시, 설정, GUI 테스트
 scripts/launcher.py      PyInstaller 진입점
@@ -131,16 +142,16 @@ Remove-Item Env:FOOTBALL_DATA_API_KEY -ErrorAction SilentlyContinue
 .\.venv\Scripts\python.exe scripts/smoke_app.py --executable dist/KickoffDesk.exe
 ```
 
-결과는 `dist/KickoffDesk.exe`입니다. Python을 별도 설치하지 않은 Windows에서 실행하는 단일 파일 배포를 목표로 하며, 콘솔 창은 표시하지 않습니다. 시간대 데이터인 `tzdata`와 PySide6 의존성을 포함합니다. `.env`, 로컬 설정, 캐시, API 키는 빌드 입력에 포함하지 않습니다.
+결과는 `dist/KickoffDesk.exe`입니다. Python을 별도 설치하지 않은 Windows에서 실행하는 단일 파일 배포를 목표로 하며, 콘솔 창은 표시하지 않습니다. 시간대 데이터인 `tzdata`와 PySide6 의존성, 명시한 Mock 로고 PNG 6개 및 출처 문서를 포함합니다. Python wheel에도 같은 로고 파일을 포함합니다. 저장소 전체나 `.env`, 로컬 설정, 다운로드한 로고 캐시, API 키는 빌드 입력에 포함하지 않습니다.
 
 GitHub Actions의 **Windows build** 워크플로는 push, pull request, 수동 실행 시 Python 3.12에서 린트 → 테스트 → 소스 GUI 확인 → PyInstaller 빌드 → 실제 `.exe` Mock 실행 확인 순서로 동작합니다. 모든 단계에서 API 키를 비우며 Secrets를 참조하지 않습니다. 성공하면 Actions 실행의 `KickoffDesk-windows-x64` 아티팩트에서 실행 파일을 내려받을 수 있습니다. 빌드 결과의 자동 릴리스 게시와 코드 서명은 포함하지 않습니다.
 
 ## 검증 범위
 
-2026-10-16 Linux 개발 환경에서 `pytest -q` **121개 통과**, `ruff check .`, `ruff format --check .`, `git diff --check` 통과를 확인했습니다. 테스트 구성은 모델·API·Mock 57개, 캐시·서비스 10개, 설정·키 관리 29개, GUI 23개, 실행·종료 2개입니다. GUI 검증은 실제 Qt 위젯을 사용하는 offscreen 방식입니다.
+2026-10-20 Linux 개발 환경에서 로고 기능을 포함한 `pytest -q` **198개 통과**, `ruff check .`, `ruff format --check .`, `git diff --check` 통과를 확인했습니다. GUI 검증은 실제 Qt 위젯을 사용하는 offscreen 방식이며, 소스 GUI 스크린샷에서 경기 목록과 관심 팀 목록의 로고 표시를 확인했습니다. 소스 Mock 실행 검사도 모든 예시 팀의 로고가 중립 아이콘과 구분되는지 확인하고 통과했습니다.
 
-자동 테스트와 Mock 실행 확인은 실제 API 키 없이 수행합니다. 초기 개발 중 Linux 환경에서 모델·API 가짜 응답·캐시·설정 테스트와 소스 GUI의 Mock 실행 검사를 통과했습니다. 같은 환경에서 API 키 환경변수를 제거한 PyInstaller 빌드 및 생성된 Linux 실행 파일의 Mock 실행 검사도 통과했습니다. 아카이브에서 `Asia/Seoul` 시간대 데이터 포함과 `.env`·`settings.json`·`secrets` 경로 미포함을 확인했습니다. 이는 Windows 실행 파일 검증과 별개입니다.
+자동 테스트와 Mock 실행 검사는 실제 API 키 없이 수행합니다. 로고의 가짜 네트워크 응답, 캐시, 실패 시 대체 표시, 이미지 요청의 인증 헤더 제외를 테스트했습니다. `0.1.1` wheel을 네트워크와 API 키 없이 빌드하여 명시한 PNG 6개와 출처 문서가 원본과 같은 내용으로 포함되고 민감 파일 경로가 포함되지 않는 것을 확인했습니다.
 
-별도의 제한된 라이브 확인에서는 실행 환경에 제공된 키로 하루 범위를 요청하여 PL·PD·CL 세 엔드포인트의 정상 응답과 통합 처리까지 확인했습니다. 키와 응답 원문은 파일이나 로그에 남기지 않았습니다. 이 확인으로 모든 날짜·상태·계정 권한의 동작을 검증한 것은 아닙니다.
+실제 로고 CDN 접속과 다운로드는 현재 개발 환경의 네트워크 정책으로 검증하지 못했습니다. 이전의 제한된 라이브 일정 확인에서는 하루 범위의 PL·PD·CL 세 API 엔드포인트 정상 응답과 통합 처리를 확인했으며, 키와 응답 원문은 파일이나 로그에 남기지 않았습니다. 일정 API 연결 확인과 로고 CDN 연결 확인은 별개입니다.
 
-2026-10-20 [Windows Actions 실행 #2](https://github.com/wlsdnr052475/kickoff-desk/actions/runs/39378708077)에서 커밋 `43515e6` 기준 린트, 121개 테스트, 소스 GUI 실행, 키 없는 Windows `.exe` 빌드와 생성된 `.exe`의 Mock 실행 점검이 모두 성공했습니다. 관심 팀 저장·재실행 복원·해제 후 재실행을 확인하는 GUI 회귀 테스트도 추가했습니다. Windows 자격 증명 관리자 실사용, 사용자 PC의 수동 실행 및 고해상도 화면 배치는 해당 환경에서 별도 확인이 필요합니다.
+Windows `.exe` 빌드와 실행은 해당 로고 버전 커밋의 Windows Actions 결과를 확인해야 합니다. Windows 자격 증명 관리자 실사용, 사용자 PC의 수동 실행 및 고해상도 화면 배치는 해당 환경에서 별도 확인이 필요합니다.
