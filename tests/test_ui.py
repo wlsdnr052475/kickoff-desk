@@ -419,6 +419,51 @@ def test_favorites_save_reloads_latest_settings(window_factory, qtbot, monkeypat
     assert saved.favorite_team_names == {57: "아스널"}
 
 
+def test_favorites_save_and_clear_survive_window_restart(window_factory, qtbot, monkeypatch):
+    selected_ids = {57, 81}
+
+    def choose(dialog):
+        for index in range(dialog.team_list.count()):
+            item = dialog.team_list.item(index)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if item.data(Qt.ItemDataRole.UserRole) in selected_ids
+                else Qt.CheckState.Unchecked
+            )
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(FavoritesDialog, "exec", choose)
+    first = window_factory(use_mock=True)
+    load(qtbot, first)
+    first._open_favorites()
+    first.favorite_checkbox.setChecked(True)
+    assert first.day_table.rowCount() == 2
+    assert first.close()
+
+    reopened = window_factory(use_mock=True)
+    assert reopened.settings_store.path == first.settings_store.path
+    assert reopened.preferences.favorite_team_ids == {57, 81}
+    assert reopened.preferences.favorite_team_names == {57: "아스널", 81: "바르셀로나"}
+    assert "2개" in reopened.favorites_label.text()
+    # Team choices persist; the temporary "favorites only" view starts unchecked.
+    assert not reopened.favorite_checkbox.isChecked()
+    load(qtbot, reopened)
+    assert reopened.result.source == "cache"
+    assert reopened.day_table.rowCount() == 3
+    reopened.favorite_checkbox.setChecked(True)
+    assert reopened.day_table.rowCount() == 2
+
+    selected_ids.clear()
+    reopened._open_favorites()
+    assert reopened.day_table.rowCount() == 0
+    assert reopened.close()
+
+    cleared = window_factory(use_mock=True)
+    assert cleared.preferences.favorite_team_ids == set()
+    assert cleared.preferences.favorite_team_names == {}
+    assert "0개" in cleared.favorites_label.text()
+
+
 def test_favorites_retains_saved_teams_absent_from_month(window_factory, monkeypatch):
     window = window_factory(use_mock=True)
     window.preferences = Preferences(
