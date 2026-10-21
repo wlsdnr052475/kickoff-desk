@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<10", "pytest-qt>=4.4,<5", "ruff>=0.11,<1"]
+dev = ["pytest>=8.3,<10", "pytest-qt>=4.4,<5", "pytest-timeout>=2.3,<3", "ruff>=0.11,<1"]
 build = ["pyinstaller>=6.12,<7"]
 
 [project.gui-scripts]

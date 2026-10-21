@@ -32,28 +32,30 @@ jobs:
           python -m pip install ".[dev,build]"
       - name: Lint
         run: python -m ruff check .
-      - name: Test without an API key
-        timeout-minutes: 5
+      - name: Test API, models, cache, settings, and Korean names
+        timeout-minutes: 2
         env:
           QT_QPA_PLATFORM: offscreen
-        shell: pwsh
         run: |
-          $testOutput = Join-Path $env:RUNNER_TEMP "pytest-output.txt"
-          $testErrors = Join-Path $env:RUNNER_TEMP "pytest-errors.txt"
-          $testRun = Start-Process -FilePath (Get-Command python).Source `
-            -ArgumentList "-u", "-m", "pytest", "-v", "-o", "faulthandler_timeout=60" `
-            -RedirectStandardOutput $testOutput -RedirectStandardError $testErrors -PassThru
-          $null = $testRun.Handle
-          $timedOut = -not $testRun.WaitForExit(120000)
-          if ($timedOut) {
-            taskkill /PID $testRun.Id /T /F | Out-Null
-          }
-          Get-Content $testOutput
-          Get-Content $testErrors
-          if ($timedOut) { throw "Tests exceeded two minutes; see the test and thread logs above." }
-          if ($testRun.ExitCode -ne 0) { throw "Tests failed: exit code $($testRun.ExitCode)." }
+          python -u -m pytest -v --timeout=30 --timeout-method=thread --ignore=tests/test_app.py --ignore=tests/test_logos.py --ignore=tests/test_ui.py
       - name: Smoke check source GUI
+        timeout-minutes: 2
         run: python scripts/smoke_app.py
+      - name: Test GUI startup and shutdown
+        timeout-minutes: 2
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -u -m pytest tests/test_app.py -v --timeout=30 --timeout-method=thread
+      - name: Test crest decoding and offline image cache
+        timeout-minutes: 2
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -u -m pytest tests/test_logos.py -v --timeout=30 --timeout-method=thread
+      - name: Test calendar, filters, and saved favorite teams
+        timeout-minutes: 2
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -u -m pytest tests/test_ui.py -v --timeout=30 --timeout-method=thread
       - name: Build a key-free Windows executable
         shell: pwsh
         run: |

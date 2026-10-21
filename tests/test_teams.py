@@ -100,3 +100,21 @@ def test_existing_korean_text_is_preserved_even_for_a_verified_id(name):
 def test_only_the_explicitly_verified_ids_translate_unknown_names():
     assert display_team_name(66, "An unknown provider name") == "An unknown provider name"
     assert display_team_name(None, "A new club") == "A new club"
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("Coventry City FC", "코번트리 시티"),
+        ("FK Shakhtar Donetsk", "샤흐타르 도네츠크"),
+        ("Hull City AFC", "헐 시티"),
+        ("LASK Linz", "LASK 린츠"),
+        ("Málaga CF", "말라가"),
+        ("RC Deportivo La Coruña", "데포르티보 라코루냐"),
+        ("Real Racing Club de Santander", "라싱 산탄데르"),
+        ("Viking FK", "바이킹 FK"),
+    ],
+)
+def test_verified_live_api_spellings_have_korean_labels_without_guessed_ids(name, expected):
+    assert display_team_name(None, name) == expected
+    assert display_team_name(999_999, name) == expected

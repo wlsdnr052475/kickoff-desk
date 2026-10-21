@@ -69,6 +69,8 @@ _CLUB_ALIASES = {
     "스완지 시티": ("Swansea City AFC", "Swansea City"),
     "카디프 시티": ("Cardiff City FC", "Cardiff City"),
     "퀸스 파크 레인저스": ("Queens Park Rangers FC", "Queens Park Rangers", "QPR"),
+    "코번트리 시티": ("Coventry City FC",),
+    "헐 시티": ("Hull City AFC",),
     "바르셀로나": ("FC Barcelona", "Barcelona", "Barça", "Barca"),
     "레알 마드리드": ("Real Madrid CF", "Real Madrid"),
     "아틀레티코 마드리드": (
@@ -103,6 +105,7 @@ _CLUB_ALIASES = {
     "레반테": ("Levante UD", "Levante"),
     "레알 오비에도": ("Real Oviedo",),
     "데포르티보 라코루냐": (
+        "RC Deportivo La Coruña",
         "RC Deportivo de La Coruña",
         "RC Deportivo de La Coruna",
         "Deportivo La Coruña",
@@ -218,7 +221,7 @@ _CLUB_ALIASES = {
     "PAOK": ("PAOK FC", "PAOK Thessaloniki", "PAOK"),
     "츠르베나 즈베즈다": ("FK Crvena Zvezda", "Crvena Zvezda", "Red Star Belgrade"),
     "파르티잔": ("FK Partizan", "Partizan Belgrade"),
-    "샤흐타르 도네츠크": ("FC Shakhtar Donetsk", "Shakhtar Donetsk"),
+    "샤흐타르 도네츠크": ("FC Shakhtar Donetsk", "Shakhtar Donetsk", "FK Shakhtar Donetsk"),
     "디나모 키이우": ("FK Dynamo Kyiv", "FC Dynamo Kyiv", "Dynamo Kyiv", "Dynamo Kiev"),
     "스파르타 프라하": ("AC Sparta Praha", "Sparta Praha", "Sparta Prague"),
     "슬라비아 프라하": ("SK Slavia Praha", "Slavia Praha", "Slavia Prague"),
@@ -226,6 +229,10 @@ _CLUB_ALIASES = {
     "FC 코펜하겐": ("FC København", "FC Kobenhavn", "FC Copenhagen", "København", "Copenhagen"),
     "미트윌란": ("FC Midtjylland", "Midtjylland"),
     "로센보르그": ("Rosenborg BK", "Rosenborg"),
+    "LASK 린츠": ("LASK Linz",),
+    "말라가": ("Málaga CF",),
+    "라싱 산탄데르": ("Real Racing Club de Santander",),
+    "바이킹 FK": ("Viking FK",),
     "보되 글림트": ("FK Bodø/Glimt", "FK Bodo/Glimt", "Bodø/Glimt", "Bodo/Glimt"),
 }
 
