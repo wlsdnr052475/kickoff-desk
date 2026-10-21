@@ -162,6 +162,20 @@ def test_download_caches_png_and_restores_offline(provider, tmp_path, qtbot, ima
             200,
         ),
     ],
+    ids=[
+        "invalid-image",
+        "oversized-response",
+        "redirect",
+        "not-found",
+        "svg-entity",
+        "svg-local-file",
+        "svg-script",
+        "svg-external-fill",
+        "oversized-dimensions",
+        "unknown-encoding",
+        "utf16-entity",
+        "svg-external-style",
+    ],
 )
 def test_bad_download_keeps_name_fallback_and_does_not_repeat(provider, tmp_path, payload, status):
     crests, network = provider
