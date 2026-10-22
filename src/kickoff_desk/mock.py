@@ -4,11 +4,36 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 
+from .catalog import Team
 from .models import Match
 
 
 class MockClient:
     """Generate a local demonstration; team pairs and fixtures are fictional."""
+
+    def fetch_teams(self) -> list[Team]:
+        """A fictional demo roster, independent of the displayed month's fixtures.
+
+        IDs have been verified against the API so favorites survive mode changes.
+        The chosen membership is fictional, not a live-season participant list.
+        """
+        return [
+            Team(57, "Arsenal FC", "Arsenal", competitions=("PL", "CL")),
+            Team(73, "Tottenham Hotspur FC", "Tottenham", competitions=("PL",)),
+            Team(81, "FC Barcelona", "Barcelona", competitions=("PD", "CL")),
+            Team(86, "Real Madrid CF", "Real Madrid", competitions=("PD", "CL")),
+            Team(5, "FC Bayern München", "Bayern Munich", competitions=("CL",)),
+            Team(65, "Manchester City FC", "Man City", competitions=("PL", "CL")),
+            Team(64, "Liverpool FC", "Liverpool", competitions=("PL",)),
+            Team(66, "Manchester United FC", "Man Utd", competitions=("PL",)),
+            Team(61, "Chelsea FC", "Chelsea", competitions=("PL",)),
+            Team(78, "Club Atlético de Madrid", "Atletico Madrid", competitions=("PD",)),
+            Team(90, "Real Betis Balompié", "Real Betis", competitions=("PD",)),
+            Team(77, "Athletic Club", "Athletic Bilbao", competitions=("PD",)),
+            Team(524, "Paris Saint-Germain FC", "PSG", competitions=("CL",)),
+            Team(108, "FC Internazionale Milano", "Inter", competitions=("CL",)),
+            Team(4, "Borussia Dortmund", "Dortmund", competitions=("CL",)),
+        ]
 
     def fetch_matches(self, date_from: date, date_to: date) -> list[Match]:
         if not isinstance(date_from, date) or not isinstance(date_to, date) or date_from > date_to:

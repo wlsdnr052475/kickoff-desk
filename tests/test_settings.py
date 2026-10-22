@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from dataclasses import replace
 from types import ModuleType
 
 import pytest
@@ -114,6 +115,15 @@ def test_session_key_overrides_environment_without_secret_files(tmp_path, monkey
         "favorite_team_names",
         "use_mock",
         "ignore_environment_api_key",
+        "theme",
+        "font_size",
+        "window_geometry",
+        "selected_competitions",
+        "favorites_only",
+        "notifications_enabled",
+        "notification_minutes",
+        "minimize_to_tray",
+        "custom_team_names",
     }
 
 
@@ -275,3 +285,135 @@ def test_malformed_stored_key_can_still_be_deleted(tmp_path):
     manager.delete_key()
     assert manager.get_key() is None
     assert not backend.values
+
+
+def test_old_version_one_preferences_keep_values_and_gain_safe_defaults(tmp_path):
+    store = SettingsStore(tmp_path)
+    store.path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "favorite_team_ids": [64],
+                "favorite_team_names": {"64": "Liverpool FC"},
+                "use_mock": False,
+                "ignore_environment_api_key": True,
+            }
+        )
+    )
+    assert store.load() == Preferences({64}, False, True, {64: "Liverpool FC"})
+    assert store.load().selected_competitions == {"PL", "PD", "CL"}
+    assert not store.load().notifications_enabled
+    assert not store.load().minimize_to_tray
+    assert store.load().theme == "light"
+
+
+def test_personalization_roundtrip_preserves_empty_filters_and_trims_names(tmp_path):
+    store = SettingsStore(tmp_path)
+    preferences = Preferences(
+        {64},
+        False,
+        True,
+        {64: "Liverpool FC"},
+        theme="dark",
+        font_size=20,
+        window_geometry="YWJjZA==",
+        selected_competitions=set(),
+        favorites_only=True,
+        notifications_enabled=True,
+        notification_minutes=60,
+        minimize_to_tray=True,
+        custom_team_names={64: "  내가 응원하는 팀  "},
+    )
+    store.save(preferences)
+    assert store.load() == replace(preferences, custom_team_names={64: "내가 응원하는 팀"})
+    payload = json.loads(store.path.read_text())
+    assert payload["version"] == 1
+    assert payload["custom_team_names"] == {"64": "내가 응원하는 팀"}
+    assert payload["selected_competitions"] == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("theme", "custom"),
+        ("theme", None),
+        ("font_size", 10),
+        ("font_size", 21),
+        ("font_size", True),
+        ("font_size", 13.0),
+        ("window_geometry", "not-base64!"),
+        pytest.param("window_geometry", "A" * 4100, id="oversized-geometry"),
+        ("window_geometry", 123),
+        ("selected_competitions", ["BL1"]),
+        ("selected_competitions", "PL"),
+        ("selected_competitions", [True]),
+        ("favorites_only", "false"),
+        ("notifications_enabled", 1),
+        ("notification_minutes", 20),
+        ("notification_minutes", 30.0),
+        ("minimize_to_tray", None),
+        ("custom_team_names", {"0": "name"}),
+        ("custom_team_names", {"64": " "}),
+        ("custom_team_names", {"64": "x" * 81}),
+        ("custom_team_names", {"64": "line\nbreak"}),
+        ("custom_team_names", {"64": "bad\ud800name"}),
+        ("custom_team_names", {str(i): "name" for i in range(1, 1002)}),
+    ],
+)
+def test_invalid_personalization_settings_are_rejected_safely(tmp_path, field, value):
+    store = SettingsStore(tmp_path)
+    store.path.write_text(json.dumps({"version": 1, field: value}))
+    with pytest.raises(SettingsError, match="설정 파일"):
+        store.load()
+
+
+def test_invalid_personalization_save_preserves_existing_settings(tmp_path):
+    store = SettingsStore(tmp_path)
+    original = Preferences(theme="dark", custom_team_names={64: "응원팀"})
+    store.save(original)
+    with pytest.raises(SettingsError, match="올바르지"):
+        store.save(replace(original, font_size=99))
+    assert store.load() == original
+
+
+def test_new_preferences_survive_every_key_policy_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOOTBALL_DATA_API_KEY", "test-only-environment")
+    store = SettingsStore(tmp_path)
+    original = Preferences(
+        {64},
+        False,
+        False,
+        {64: "Liverpool FC"},
+        theme="dark",
+        font_size=18,
+        window_geometry="YWJjZA==",
+        selected_competitions={"PL"},
+        favorites_only=True,
+        notifications_enabled=True,
+        notification_minutes=10,
+        minimize_to_tray=True,
+        custom_team_names={64: "우리 팀"},
+    )
+    store.save(original)
+    manager = KeyManager(store, FakeBackend())
+    manager.set_key("test-session-only")
+    assert store.load() == replace(original, ignore_environment_api_key=True)
+    manager.set_key("test-stored-only", persist=True)
+    assert store.load() == replace(original, ignore_environment_api_key=True)
+    manager.delete_key()
+    assert store.load() == replace(original, ignore_environment_api_key=True)
+    manager.use_environment_key()
+    assert store.load() == original
+    saved_text = store.path.read_text()
+    assert "test-session-only" not in saved_text
+    assert "test-stored-only" not in saved_text
+    assert "test-only-environment" not in saved_text
+
+
+def test_preference_containers_are_independent():
+    first = Preferences()
+    second = Preferences()
+    first.selected_competitions.clear()
+    first.custom_team_names[64] = "팀"
+    assert second.selected_competitions == {"PL", "PD", "CL"}
+    assert second.custom_team_names == {}

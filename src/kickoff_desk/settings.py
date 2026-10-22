@@ -7,6 +7,7 @@ support an environment variable or a key held in memory for this session.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -30,6 +31,15 @@ class Preferences:
     use_mock: bool = True
     ignore_environment_api_key: bool = False
     favorite_team_names: dict[int, str] = field(default_factory=dict)
+    theme: str = "light"
+    font_size: int = 13
+    window_geometry: str = ""
+    selected_competitions: set[str] = field(default_factory=lambda: {"PL", "PD", "CL"})
+    favorites_only: bool = False
+    notifications_enabled: bool = False
+    notification_minutes: int = 30
+    minimize_to_tray: bool = False
+    custom_team_names: dict[int, str] = field(default_factory=dict)
 
 
 def data_dir() -> Path:
@@ -68,7 +78,60 @@ def _parse_preferences(payload: object) -> Preferences:
         if numeric_id <= 0 or not isinstance(name, str):
             raise ValueError
         parsed_names[numeric_id] = name
-    return Preferences(set(team_ids), use_mock, ignore_environment, parsed_names)
+    theme = payload.get("theme", "light")
+    font_size = payload.get("font_size", 13)
+    geometry = payload.get("window_geometry", "")
+    competitions = payload.get("selected_competitions", ["PL", "PD", "CL"])
+    favorites_only = payload.get("favorites_only", False)
+    notifications_enabled = payload.get("notifications_enabled", False)
+    notification_minutes = payload.get("notification_minutes", 30)
+    minimize_to_tray = payload.get("minimize_to_tray", False)
+    custom_names = payload.get("custom_team_names", {})
+    if theme not in ("light", "dark") or type(font_size) is not int or not 11 <= font_size <= 20:
+        raise ValueError
+    if not isinstance(geometry, str) or len(geometry) > 4096:
+        raise ValueError
+    if geometry:
+        base64.b64decode(geometry, validate=True)
+    if not isinstance(competitions, list) or any(
+        not isinstance(code, str) or code not in {"PL", "PD", "CL"} for code in competitions
+    ):
+        raise ValueError
+    if any(
+        type(value) is not bool
+        for value in (favorites_only, notifications_enabled, minimize_to_tray)
+    ):
+        raise ValueError
+    if type(notification_minutes) is not int or notification_minutes not in {10, 30, 60}:
+        raise ValueError
+    if not isinstance(custom_names, dict) or len(custom_names) > 1000:
+        raise ValueError
+    parsed_custom_names: dict[int, str] = {}
+    for team_id, name in custom_names.items():
+        if not isinstance(team_id, str) or not team_id.isascii() or not team_id.isdigit():
+            raise ValueError
+        numeric_id = int(team_id)
+        if numeric_id <= 0 or not isinstance(name, str):
+            raise ValueError
+        trimmed = name.strip()
+        if not trimmed or len(trimmed) > 80 or not trimmed.isprintable():
+            raise ValueError
+        parsed_custom_names[numeric_id] = trimmed
+    return Preferences(
+        favorite_team_ids=set(team_ids),
+        use_mock=use_mock,
+        ignore_environment_api_key=ignore_environment,
+        favorite_team_names=parsed_names,
+        theme=theme,
+        font_size=font_size,
+        window_geometry=geometry,
+        selected_competitions=set(competitions),
+        favorites_only=favorites_only,
+        notifications_enabled=notifications_enabled,
+        notification_minutes=notification_minutes,
+        minimize_to_tray=minimize_to_tray,
+        custom_team_names=parsed_custom_names,
+    )
 
 
 class SettingsStore:
@@ -96,6 +159,8 @@ class SettingsStore:
         try:
             if any(type(team_id) is not int for team_id in preferences.favorite_team_names):
                 raise ValueError
+            if any(type(team_id) is not int for team_id in preferences.custom_team_names):
+                raise ValueError
             payload = {
                 "version": 1,
                 "favorite_team_ids": sorted(preferences.favorite_team_ids),
@@ -104,8 +169,22 @@ class SettingsStore:
                 },
                 "use_mock": preferences.use_mock,
                 "ignore_environment_api_key": preferences.ignore_environment_api_key,
+                "theme": preferences.theme,
+                "font_size": preferences.font_size,
+                "window_geometry": preferences.window_geometry,
+                "selected_competitions": sorted(preferences.selected_competitions),
+                "favorites_only": preferences.favorites_only,
+                "notifications_enabled": preferences.notifications_enabled,
+                "notification_minutes": preferences.notification_minutes,
+                "minimize_to_tray": preferences.minimize_to_tray,
+                "custom_team_names": {
+                    str(team_id): name for team_id, name in preferences.custom_team_names.items()
+                },
             }
-            _parse_preferences(payload)
+            normalized = _parse_preferences(payload)
+            payload["custom_team_names"] = {
+                str(team_id): name for team_id, name in normalized.custom_team_names.items()
+            }
             content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         except (ValueError, TypeError, AttributeError, OverflowError):
             raise SettingsError("저장할 설정이 올바르지 않습니다.") from None

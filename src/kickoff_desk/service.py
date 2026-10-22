@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
 
@@ -27,6 +27,19 @@ class LoadResult:
     warning: str = ""
 
 
+@dataclass(frozen=True)
+class RangeLoadResult:
+    start: date
+    end: date
+    matches: list[Match]
+    fetched_at: datetime | None
+    source: str
+    stale: bool = False
+    warning: str = ""
+    match_fetched_at: dict[int, datetime] = field(default_factory=dict)
+    month_fetched_at: dict[tuple[int, int], datetime] = field(default_factory=dict)
+
+
 def utc_query_dates(year: int, month: int) -> tuple[date, date]:
     """API date filters are UTC; include both edges of the entire Korean month."""
     first = date(year, month, 1)
@@ -36,6 +49,25 @@ def utc_query_dates(year: int, month: int) -> tuple[date, date]:
     return start.date(), (end - timedelta(microseconds=1)).date()
 
 
+def _range_months(start: date, end: date) -> list[date]:
+    if type(start) is not date or type(end) is not date or end < start:
+        raise ValueError("조회 날짜 범위가 올바르지 않습니다.")
+    if (end - start).days >= 120:
+        raise ValueError("한 번에 조회할 수 있는 기간은 최대 120일입니다.")
+    months = []
+    current = start.replace(day=1)
+    while current <= end:
+        months.append(current)
+        if (current.year, current.month) == (end.year, end.month):
+            break
+        current = (
+            date(current.year + 1, 1, 1)
+            if current.month == 12
+            else date(current.year, current.month + 1, 1)
+        )
+    return months
+
+
 class ScheduleService:
     def __init__(self, provider: FixtureProvider | None, cache: CacheStore, mode: str = "live"):
         if mode not in {"live", "mock"}:
@@ -43,6 +75,85 @@ class ScheduleService:
         self.provider = provider
         self.cache = cache
         self.mode = mode
+
+    def cached_versions(self, start: date, end: date) -> dict[int, tuple[datetime, Match]]:
+        """Read newest known versions across existing monthly caches, with no HTTP.
+
+        Include the full boundary months before applying any date filter. A
+        rescheduled match outside the requested days must still supersede an
+        older version that falls inside them. Missing or corrupt caches are
+        skipped; normal month loading remains responsible for error reporting
+        and recovery, so this helper does not establish complete range coverage.
+        """
+        versions: dict[int, tuple[datetime, Match]] = {}
+        for month in _range_months(start, end):
+            try:
+                snapshot = self.cache.load(month.year, month.month)
+            except CacheError:
+                continue
+            if snapshot is None:
+                continue
+            for match in snapshot.matches:
+                existing = versions.get(match.id)
+                if existing is None or snapshot.fetched_at >= existing[0]:
+                    versions[match.id] = (snapshot.fetched_at, match)
+        return versions
+
+    def load_range(self, start: date, end: date, refresh: bool = False) -> RangeLoadResult:
+        """Read an inclusive KST range through the same per-month offline caches.
+
+        A bounded range prevents an accidental year-long GUI operation. Missing
+        months remain explicit in the warning; a partial range is never labelled
+        as wholly current. If a rescheduled fixture appears in two snapshots,
+        the most recently fetched snapshot wins before applying date filters.
+        """
+        results = [
+            self.load_month(month.year, month.month, refresh) for month in _range_months(start, end)
+        ]
+
+        earliest = datetime.min.replace(tzinfo=timezone.utc)
+        matches: dict[int, Match] = {}
+        match_stamps: dict[int, datetime] = {}
+        for result in sorted(results, key=lambda item: item.fetched_at or earliest):
+            for match in result.matches:
+                matches[match.id] = match
+                if result.fetched_at is not None:
+                    match_stamps[match.id] = result.fetched_at
+        visible = filter_matches(
+            match
+            for match in matches.values()
+            if match.local_date is None or start <= match.local_date <= end
+        )
+        available = [item for item in results if item.source != "empty"]
+        stamps = [item.fetched_at for item in available if item.fetched_at is not None]
+        stale = any(item.stale or item.source == "empty" for item in results)
+        source = (
+            "empty"
+            if not available
+            else "cache"
+            if any(item.source == "cache" for item in available)
+            else self.mode
+        )
+        warnings = [
+            f"{item.year}년 {item.month}월: {item.warning}" for item in results if item.warning
+        ]
+        return RangeLoadResult(
+            start,
+            end,
+            visible,
+            min(stamps) if stamps else None,
+            source,
+            stale,
+            " ".join(warnings),
+            match_fetched_at={
+                match.id: match_stamps[match.id] for match in visible if match.id in match_stamps
+            },
+            month_fetched_at={
+                (result.year, result.month): result.fetched_at
+                for result in available
+                if result.fetched_at is not None
+            },
+        )
 
     def load_month(self, year: int, month: int, refresh: bool = False) -> LoadResult:
         first, last = utc_query_dates(year, month)

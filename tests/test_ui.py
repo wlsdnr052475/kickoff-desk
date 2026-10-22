@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from PySide6.QtCore import QDate, QObject, QSize, Qt, QTimer, Signal
@@ -12,9 +12,11 @@ from PySide6.QtWidgets import QDialog, QLineEdit
 
 from kickoff_desk import settings, ui
 from kickoff_desk.cache import CacheStore
+from kickoff_desk.catalog import CatalogResult, Team
 from kickoff_desk.mock import MockClient
-from kickoff_desk.models import Match
-from kickoff_desk.service import LoadResult, ScheduleService
+from kickoff_desk.models import SEOUL, Match
+from kickoff_desk.personalization import PersonalizationDialog
+from kickoff_desk.service import LoadResult, RangeLoadResult, ScheduleService
 from kickoff_desk.settings import KeyManager, Preferences, SettingsStore
 from kickoff_desk.ui import FavoritesDialog, KeyDialog, MainWindow
 
@@ -52,6 +54,33 @@ def crest_provider(qapp):
             self.close_calls += 1
 
     return FakeCrestProvider()
+
+
+@pytest.fixture
+def notification_controller(qapp):
+    class FakeNotificationController(QObject):
+        restore_requested = Signal()
+        quit_requested = Signal()
+        warnings = Signal(str)
+
+        def __init__(self):
+            super().__init__()
+            self.updates = []
+            self.close_calls = 0
+            self.hide_calls = 0
+            self.can_hide = False
+
+        def update(self, matches, preferences, use_mock):
+            self.updates.append((list(matches), set(preferences.favorite_team_ids), use_mock))
+
+        def hide_to_tray(self):
+            self.hide_calls += 1
+            return self.can_hide
+
+        def close(self):
+            self.close_calls += 1
+
+    return FakeNotificationController()
 
 
 @pytest.fixture
@@ -485,12 +514,10 @@ def test_favorites_save_and_clear_survive_window_restart(window_factory, qtbot, 
     assert reopened.preferences.favorite_team_ids == {57, 81}
     assert reopened.preferences.favorite_team_names == {57: "아스널", 81: "바르셀로나"}
     assert "2개" in reopened.favorites_label.text()
-    # Team choices persist; the temporary "favorites only" view starts unchecked.
-    assert not reopened.favorite_checkbox.isChecked()
+    # Both saved teams and the favorites-only view now survive a restart.
+    assert reopened.favorite_checkbox.isChecked()
     load(qtbot, reopened)
     assert reopened.result.source == "cache"
-    assert reopened.day_table.rowCount() == 3
-    reopened.favorite_checkbox.setChecked(True)
     assert reopened.day_table.rowCount() == 2
 
     selected_ids.clear()
@@ -773,7 +800,7 @@ def test_saved_english_favorites_display_in_korean_after_restart(
         assert items[57].text() == "아스널"
         assert items[57].toolTip() == "Arsenal FC"
         assert items[9001].text() == "Example United FC"
-        assert dialog.selected_teams() == {57: "아스널", 9001: "Example United FC"}
+        assert dialog.selected_teams() == {57: "Arsenal FC", 9001: "Example United FC"}
         return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(FavoritesDialog, "exec", inspect)
@@ -781,7 +808,7 @@ def test_saved_english_favorites_display_in_korean_after_restart(
     assert window.close()
     reopened = window_factory(use_mock=True, crest_provider=crest_provider)
     assert reopened.preferences.favorite_team_ids == {57, 9001}
-    assert reopened.preferences.favorite_team_names == {57: "아스널", 9001: "Example United FC"}
+    assert reopened.preferences.favorite_team_names == {57: "Arsenal FC", 9001: "Example United FC"}
 
 
 def test_korean_display_names_do_not_change_favorite_matching(window_factory, crest_provider):
@@ -797,3 +824,369 @@ def test_korean_display_names_do_not_change_favorite_matching(window_factory, cr
     assert window.day_table.item(0, 2).text() == "아스널"
     assert window.day_table.item(0, 3).text() == "토트넘"
     assert window.day_table.item(0, 2).data(Qt.ItemDataRole.UserRole) == 1
+
+
+def test_today_and_tomorrow_use_korean_calendar_dates(window_factory, qtbot):
+    def clock():
+        return datetime(2026, 1, 31, 18, 0, tzinfo=timezone.utc)
+
+    window = window_factory(use_mock=True, clock=clock)
+    with qtbot.waitSignal(window.load_completed):
+        window.today_button.click()
+    assert window.calendar.selectedDate() == QDate(2026, 2, 1)
+    with qtbot.waitSignal(window.load_completed):
+        window.tomorrow_button.click()
+    assert window.calendar.selectedDate() == QDate(2026, 2, 2)
+    assert window.result.month == 2
+
+
+def test_week_view_crosses_month_boundary_and_refreshes_same_range(window_factory, qtbot):
+    window = window_factory(use_mock=True, clock=lambda: datetime(2026, 2, 1, 10, 0, tzinfo=SEOUL))
+    with qtbot.waitSignal(window.load_completed):
+        window.week_button.click()
+    assert isinstance(window.result, RangeLoadResult)
+    assert (window.result.start, window.result.end) == (date(2026, 1, 26), date(2026, 2, 1))
+    assert window.day_table.rowCount() == 21
+    assert "이번 주" in window.date_label.text()
+    assert window.day_table.item(0, 0).text().startswith("01/26\n")
+    assert window.day_table.item(20, 0).text().startswith("02/01\n")
+    with qtbot.waitSignal(window.load_completed):
+        window.refresh_button.click()
+    assert window._view_mode == "week"
+    assert window.result.start == date(2026, 1, 26)
+    with qtbot.waitSignal(window.load_completed):
+        window.date_button.click()
+    assert window._view_mode == "day"
+    assert isinstance(window.result, LoadResult)
+    assert window.day_table.horizontalHeaderItem(0).text() == "시간 (KST)"
+
+
+def test_next_favorite_searches_in_order_ignores_past_and_uncertain_games(
+    window_factory, qtbot, notification_controller
+):
+    now = datetime(2026, 1, 31, 20, 0, tzinfo=SEOUL)
+
+    class Service:
+        calls = []
+
+        def load_month(self, year, month, refresh=False):
+            self.calls.append((year, month))
+            matches = (
+                [
+                    Match(
+                        1, "PL", 57, "Arsenal", 73, "Tottenham", now - timedelta(hours=1), "TIMED"
+                    ),
+                    Match(
+                        2,
+                        "PL",
+                        57,
+                        "Arsenal",
+                        73,
+                        "Tottenham",
+                        now + timedelta(hours=1),
+                        "SCHEDULED",
+                    ),
+                ]
+                if month == 1
+                else [
+                    Match(3, "PL", 57, "Arsenal", 73, "Tottenham", now + timedelta(days=2), "TIMED")
+                ]
+            )
+            return LoadResult(year, month, matches, now, "mock")
+
+    service = Service()
+    window = window_factory(
+        use_mock=True,
+        clock=lambda: now,
+        service_factory=lambda _: service,
+        notification_controller=notification_controller,
+    )
+    window.preferences.favorite_team_ids = {57}
+    with qtbot.waitSignal(window.load_completed):
+        window.next_favorite_button.click()
+    assert service.calls == [(2026, 1), (2026, 2)]
+    assert window.calendar.selectedDate() == QDate(2026, 2, 2)
+    assert window.day_table.item(0, 0).data(Qt.ItemDataRole.UserRole) == 3
+    assert window.day_table.selectionModel().selectedRows()[0].row() == 0
+    assert "90일" in window.notice_label.text()
+
+
+def test_next_favorite_uses_latest_cached_reschedule(window_factory, qtbot):
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=SEOUL)
+    old = Match(
+        1, "PL", 57, "Arsenal", 73, "Tottenham", datetime(2026, 10, 31, tzinfo=SEOUL), "TIMED"
+    )
+    moved = Match(
+        1, "PL", 57, "Arsenal", 73, "Tottenham", datetime(2026, 11, 15, tzinfo=SEOUL), "TIMED"
+    )
+
+    class Service:
+        calls = []
+
+        def cached_versions(self, start, end):
+            return {1: (now - timedelta(days=1), moved)}
+
+        def load_month(self, year, month, refresh=False):
+            self.calls.append(month)
+            return LoadResult(
+                year,
+                month,
+                [old if month == 10 else moved],
+                now - timedelta(days=5 if month == 10 else 1),
+                "cache",
+                True,
+            )
+
+    service = Service()
+    window = window_factory(use_mock=True, clock=lambda: now, service_factory=lambda _: service)
+    window.preferences.favorite_team_ids = {57}
+    with qtbot.waitSignal(window.load_completed):
+        window._find_next_favorite()
+    assert service.calls == [10, 11]
+    assert window.calendar.selectedDate() == QDate(2026, 11, 15)
+
+
+def test_next_favorite_limit_and_league_filter(window_factory, qtbot):
+    now = datetime(2026, 1, 31, 10, 0, tzinfo=SEOUL)
+
+    class Service:
+        calls = []
+
+        def load_month(self, year, month, refresh=False):
+            self.calls.append((year, month))
+            matches = [
+                Match(1, "CL", 57, "Arsenal", 73, "Tottenham", now + timedelta(days=1), "TIMED"),
+                Match(2, "PL", 57, "Arsenal", 73, "Tottenham", now + timedelta(days=91), "TIMED"),
+            ]
+            return LoadResult(year, month, matches, now, "mock")
+
+    service = Service()
+    window = window_factory(use_mock=True, clock=lambda: now, service_factory=lambda _: service)
+    window.preferences.favorite_team_ids = {57}
+    window.competition_checkboxes["CL"].setChecked(False)
+    with qtbot.waitSignal(window.load_completed):
+        window._find_next_favorite()
+    assert service.calls == [(2026, 1), (2026, 2), (2026, 3), (2026, 4), (2026, 5)]
+    assert "90일" in window.notice_label.text()
+    assert "없습니다" in window.notice_label.text()
+
+
+def test_next_favorite_without_team_does_not_start_requests(window_factory):
+    window = window_factory(use_mock=True)
+    window.next_favorite_button.click()
+    assert not window.is_loading
+    assert "팀을 먼저 선택" in window.notice_label.text()
+
+
+def test_catalog_load_is_async_and_preserves_favorite_selection(window_factory, qtbot):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Catalog:
+        def load(self, refresh=False):
+            entered.set()
+            release.wait(timeout=3)
+            return CatalogResult([Team(64, "Liverpool FC", competitions=("PL",))], None, "mock")
+
+    window = window_factory(use_mock=True, catalog_factory=lambda _: Catalog())
+    dialog = FavoritesDialog({57: "아스널"}, {57}, window)
+    qtbot.addWidget(dialog)
+    window._favorites_dialog = dialog
+    window._start_catalog()
+    try:
+        qtbot.waitUntil(entered.is_set)
+        assert window.is_loading
+        assert not window.key_button.isEnabled()
+        assert not window.mock_checkbox.isEnabled()
+        assert not window.refresh_button.isEnabled()
+        assert dialog.selected_teams() == {57: "아스널"}
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: not window.is_loading)
+    assert {
+        dialog.team_list.item(i).data(Qt.ItemDataRole.UserRole)
+        for i in range(dialog.team_list.count())
+    } == {57, 64}
+    assert dialog.selected_teams() == {57: "아스널"}
+    assert window.key_button.isEnabled()
+    window._favorites_dialog = None
+
+
+def test_close_waits_for_catalog_worker(window_factory, qtbot, notification_controller):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Catalog:
+        def load(self, refresh=False):
+            entered.set()
+            release.wait(timeout=3)
+            return CatalogResult([], None, "mock")
+
+    window = window_factory(
+        use_mock=True,
+        catalog_factory=lambda _: Catalog(),
+        notification_controller=notification_controller,
+    )
+    dialog = FavoritesDialog({}, set(), window)
+    qtbot.addWidget(dialog)
+    window._favorites_dialog = dialog
+    window._start_catalog()
+    try:
+        qtbot.waitUntil(entered.is_set)
+        assert not window.close()
+        assert notification_controller.close_calls == 0
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: not window.is_loading)
+    assert not window.isVisible()
+    assert notification_controller.close_calls == 1
+
+
+def test_filters_and_geometry_restore_without_overwriting_key_preferences(window_factory):
+    window = window_factory(use_mock=True)
+    KeyManager(window.settings_store).delete_key()
+    window.competition_checkboxes["PD"].setChecked(False)
+    window.favorite_checkbox.setChecked(True)
+    assert window.close()
+    saved = window.settings_store.load()
+    assert saved.ignore_environment_api_key
+    assert saved.window_geometry
+    reopened = window_factory(use_mock=True)
+    assert not reopened.competition_checkboxes["PD"].isChecked()
+    assert reopened.favorite_checkbox.isChecked()
+    assert reopened.preferences.selected_competitions == {"PL", "CL"}
+
+
+def test_personalization_updates_theme_font_and_notification_preferences(
+    window_factory, monkeypatch, notification_controller
+):
+    window = window_factory(use_mock=True, notification_controller=notification_controller)
+    KeyManager(window.settings_store).delete_key()
+
+    def choose(dialog):
+        dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData("dark"))
+        dialog.font_size_spin.setValue(20)
+        dialog.notifications_checkbox.setChecked(True)
+        dialog.notification_minutes_combo.setCurrentIndex(
+            dialog.notification_minutes_combo.findData(60)
+        )
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(PersonalizationDialog, "exec", choose)
+    window._open_personalization()
+    saved = window.settings_store.load()
+    assert saved.theme == "dark" and saved.font_size == 20
+    assert saved.notifications_enabled and saved.notification_minutes == 60
+    assert saved.ignore_environment_api_key
+    assert "20px" in window.styleSheet()
+    assert "#18232e" in window.styleSheet()
+    assert notification_controller.updates[-1][2]
+
+
+def test_custom_team_name_applies_to_fixtures_and_survives_restart(window_factory, monkeypatch):
+    window = window_factory(use_mock=True)
+    window.preferences.favorite_team_ids = {57}
+    window.preferences.favorite_team_names = {57: "Arsenal FC"}
+
+    def choose(dialog):
+        dialog.team_list.setCurrentRow(0)
+        dialog.nickname_input.setText("우리 팀")
+        dialog.rename_button.click()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(FavoritesDialog, "exec", choose)
+    window._open_favorites()
+    assert window._display_team_name(57, "Arsenal FC") == "우리 팀"
+    assert window.close()
+    reopened = window_factory(use_mock=True)
+    assert reopened._display_team_name(57, "Arsenal FC") == "우리 팀"
+    assert reopened.settings_store.load().favorite_team_ids == {57}
+
+
+def test_notifications_retain_upcoming_data_when_browsing_past(
+    window_factory, notification_controller
+):
+    window = window_factory(use_mock=True, notification_controller=notification_controller)
+    future = Match(
+        1, "PL", 57, "Arsenal", 73, "Tottenham", datetime(2026, 3, 2, tzinfo=SEOUL), "TIMED"
+    )
+    window._remember_matches(LoadResult(2026, 3, [future], None, "mock"))
+    window._remember_matches(LoadResult(2025, 12, [], None, "mock"))
+    assert notification_controller.updates[-1][0] == [future]
+    canceled = Match(1, "PL", 57, "Arsenal", 73, "Tottenham", future.utc_date, "CANCELED")
+    window._remember_matches(LoadResult(2026, 3, [canceled], None, "mock"))
+    assert notification_controller.updates[-1][0] == [canceled]
+
+
+def test_older_month_cache_cannot_roll_back_newer_notification_schedule(
+    window_factory, notification_controller
+):
+    window = window_factory(use_mock=True, notification_controller=notification_controller)
+    newer = datetime(2026, 10, 22, tzinfo=SEOUL)
+    older = datetime(2026, 10, 20, tzinfo=SEOUL)
+    moved = Match(
+        1, "PL", 57, "Arsenal", 73, "Tottenham", datetime(2026, 11, 15, tzinfo=SEOUL), "TIMED"
+    )
+    old = Match(
+        1, "PL", 57, "Arsenal", 73, "Tottenham", datetime(2026, 10, 31, tzinfo=SEOUL), "TIMED"
+    )
+    window._remember_matches(LoadResult(2026, 11, [moved], newer, "cache", True))
+    window._remember_matches(LoadResult(2026, 10, [old], older, "cache", True))
+    assert notification_controller.updates[-1][0] == [moved]
+    window._remember_matches(LoadResult(2026, 11, [], older, "cache", True))
+    assert notification_controller.updates[-1][0] == [moved]
+    window._remember_matches(LoadResult(2026, 11, [], newer + timedelta(days=1), "mock"))
+    assert notification_controller.updates[-1][0] == []
+
+
+def test_notification_range_uses_per_match_time_instead_of_oldest_month(
+    window_factory, notification_controller
+):
+    window = window_factory(use_mock=True, notification_controller=notification_controller)
+    old_stamp = datetime(2026, 1, 10, tzinfo=SEOUL)
+    fresh_stamp = datetime(2026, 1, 20, tzinfo=SEOUL)
+    original = Match(
+        1, "PL", 57, "Arsenal", 73, "Tottenham", datetime(2026, 2, 1, tzinfo=SEOUL), "TIMED"
+    )
+    canceled = Match(1, "PL", 57, "Arsenal", 73, "Tottenham", original.utc_date, "CANCELED")
+    window._remember_matches(
+        LoadResult(2026, 2, [original], fresh_stamp - timedelta(days=1), "cache", True)
+    )
+    result = RangeLoadResult(
+        date(2026, 1, 26),
+        date(2026, 2, 1),
+        [canceled],
+        old_stamp,
+        "cache",
+        True,
+        match_fetched_at={1: fresh_stamp},
+        month_fetched_at={(2026, 1): old_stamp, (2026, 2): fresh_stamp},
+    )
+    window._remember_matches(result)
+    assert notification_controller.updates[-1][0] == [canceled]
+
+
+def test_notification_warning_survives_schedule_loading(
+    window_factory, notification_controller, qtbot
+):
+    window = window_factory(use_mock=True, notification_controller=notification_controller)
+    window.preferences.notifications_enabled = True
+    notification_controller.warnings.emit("이 환경에서는 알림을 표시할 수 없습니다.")
+    load(qtbot, window)
+    assert window.notification_status_label.isVisible()
+    assert "알림을 표시할 수 없습니다" in window.notification_status_label.text()
+
+
+def test_close_to_tray_restore_and_real_quit(window_factory, notification_controller):
+    window = window_factory(use_mock=True, notification_controller=notification_controller)
+    window.preferences.minimize_to_tray = True
+    notification_controller.can_hide = True
+    assert not window.close()
+    assert not window.isVisible()
+    assert notification_controller.close_calls == 0
+    notification_controller.restore_requested.emit()
+    assert window.isVisible()
+    window._quit()
+    assert notification_controller.close_calls == 1
+    window.close()
+    assert notification_controller.hide_calls == 1

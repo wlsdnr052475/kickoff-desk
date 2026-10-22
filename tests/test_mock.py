@@ -50,3 +50,30 @@ def test_demo_rejects_reversed_range():
 def test_demo_does_not_supply_remote_crest_urls():
     matches = MockClient().fetch_matches(date(2030, 4, 1), date(2030, 4, 1))
     assert all(match.home_crest is None and match.away_crest is None for match in matches)
+
+
+def test_demo_catalog_has_searchable_teams_without_any_selected_month_fixture():
+    client = MockClient()
+    teams = client.fetch_teams()
+    matches = client.fetch_matches(date(2030, 4, 1), date(2030, 4, 1))
+    fixture_ids = {identifier for match in matches for identifier in (match.home_id, match.away_id)}
+    assert len(teams) == 15
+    assert len({team.id for team in teams}) == len(teams)
+    assert any(team.id not in fixture_ids for team in teams)
+    assert any(team.name == "Liverpool FC" for team in teams)
+    assert all(team.crest is None for team in teams)
+    assert teams == client.fetch_teams()
+    assert {code for team in teams for code in team.competitions} == {"PL", "PD", "CL"}
+
+
+def test_demo_catalog_uses_verified_ids_so_favorites_survive_mode_changes():
+    by_name = {team.name: team.id for team in MockClient().fetch_teams()}
+    assert by_name["Chelsea FC"] == 61
+    assert by_name["Liverpool FC"] == 64
+    assert by_name["Manchester United FC"] == 66
+    assert by_name["Club Atlético de Madrid"] == 78
+    assert by_name["Real Betis Balompié"] == 90
+    assert by_name["Athletic Club"] == 77
+    assert by_name["Paris Saint-Germain FC"] == 524
+    assert by_name["FC Internazionale Milano"] == 108
+    assert by_name["Borussia Dortmund"] == 4

@@ -32,12 +32,12 @@ jobs:
           python -m pip install ".[dev,build]"
       - name: Lint
         run: python -m ruff check .
-      - name: Test API, models, cache, settings, and Korean names
+      - name: Test API, models, caches, settings, catalog, and Korean names
         timeout-minutes: 2
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -u -m pytest -v --timeout=30 --timeout-method=thread --ignore=tests/test_app.py --ignore=tests/test_logos.py --ignore=tests/test_ui.py
+          python -u -m pytest -v --timeout=30 --timeout-method=thread --ignore=tests/test_app.py --ignore=tests/test_logos.py --ignore=tests/test_ui.py --ignore=tests/test_favorites.py --ignore=tests/test_personalization.py --ignore=tests/test_notifications.py
       - name: Smoke check source GUI
         timeout-minutes: 2
         run: python scripts/smoke_app.py
@@ -51,11 +51,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -u -m pytest tests/test_logos.py -v --timeout=30 --timeout-method=thread
-      - name: Test calendar, filters, and saved favorite teams
+      - name: Test calendar, favorites, personalization, and reminders
         timeout-minutes: 2
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -u -m pytest tests/test_ui.py -v --timeout=30 --timeout-method=thread
+        run: python -u -m pytest tests/test_ui.py tests/test_favorites.py tests/test_personalization.py tests/test_notifications.py -v --timeout=30 --timeout-method=thread
       - name: Build a key-free Windows executable
         shell: pwsh
         run: |

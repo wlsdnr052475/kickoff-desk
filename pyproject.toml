@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kickoff-desk"
-version = "0.1.1"
+version = "0.2.0"
 description = "A native desktop football fixture calendar in Korean Standard Time"
 readme = "README.md"
 requires-python = ">=3.11"

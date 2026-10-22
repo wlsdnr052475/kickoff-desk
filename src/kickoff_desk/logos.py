@@ -113,6 +113,28 @@ def _fallback_icon() -> QIcon:
     return QIcon(QPixmap.fromImage(image))
 
 
+def _crest_icon(image: QImage) -> QIcon:
+    """Keep transparent navy/black crests visible on both application themes."""
+    canvas = QImage(_ICON_SIZE, _ICON_SIZE, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#ffffff"))
+    painter.drawRoundedRect(QRectF(1, 1, _ICON_SIZE - 2, _ICON_SIZE - 2), 10, 10)
+    size = image.size().scaled(QSize(84, 84), Qt.AspectRatioMode.KeepAspectRatio)
+    target = QRectF(
+        (_ICON_SIZE - size.width()) / 2,
+        (_ICON_SIZE - size.height()) / 2,
+        size.width(),
+        size.height(),
+    )
+    painter.drawImage(target, image)
+    painter.end()
+    return QIcon(QPixmap.fromImage(canvas))
+
+
 @dataclass
 class _Download:
     team_id: int
@@ -162,7 +184,7 @@ class CrestProvider(QObject):
                 except OSError:
                     continue
                 if image is not None:
-                    self._icons[team_id] = QIcon(QPixmap.fromImage(image))
+                    self._icons[team_id] = _crest_icon(image)
                     if path.parent == self.directory:
                         self._cached.add(team_id)
                     break
@@ -227,7 +249,7 @@ class CrestProvider(QObject):
         ):
             image = _decode_image(bytes(download.data))
             if image is not None:
-                self._icons[download.team_id] = QIcon(QPixmap.fromImage(image))
+                self._icons[download.team_id] = _crest_icon(image)
                 self._save(download.team_id, image)
                 self.updated.emit(download.team_id)
         reply.deleteLater()
